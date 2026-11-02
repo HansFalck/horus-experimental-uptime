@@ -35,11 +35,11 @@ jobs:
           WINDOW_MS: ${{ inputs.window_ms }}
         run: node check.mjs
       # GitHub disables scheduled workflows in a public repo after 60 days without a commit.
-      # One tiny commit each Monday 03:0x UTC keeps the schedule alive.
-      - name: Weekly keep-alive
-        if: github.event_name == 'schedule'
+      # A tiny commit whenever the newest commit is 30+ days old keeps the schedule alive.
+      - name: Keep-alive
+        if: always() && github.event_name == 'schedule'
         run: |
-          if [ "$(date -u +%u%H)" = "103" ] && [ "$(date -u +%M)" -lt 5 ]; then
+          if [ $(( $(date -u +%s) - $(git log -1 --format=%ct) )) -gt 2592000 ]; then
             date -u +%FT%TZ > keepalive.txt
             git config user.name "uptime-keepalive"
             git config user.email "uptime-keepalive@users.noreply.github.com"
