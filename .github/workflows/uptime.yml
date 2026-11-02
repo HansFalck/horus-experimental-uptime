@@ -1,0 +1,49 @@
+# Published to HansFalck/horus-experimental-uptime as .github/workflows/uptime.yml by publish.mjs
+# (source of truth: starfleet-development tools/horus-experimental/uptime/). #470.
+name: uptime
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Comma-separated URLs to probe (a drill points this at a dead URL)"
+        required: false
+      window_ms:
+        description: "How long a failure must last before alerting (ms)"
+        required: false
+permissions:
+  contents: write
+  issues: write
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe from outside
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TARGETS: ${{ inputs.targets }}
+          WINDOW_MS: ${{ inputs.window_ms }}
+        run: node check.mjs
+      # GitHub disables scheduled workflows in a public repo after 60 days without a commit.
+      # One tiny commit each Monday 03:0x UTC keeps the schedule alive.
+      - name: Weekly keep-alive
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%u%H)" = "103" ] && [ "$(date -u +%M)" -lt 5 ]; then
+            date -u +%FT%TZ > keepalive.txt
+            git config user.name "uptime-keepalive"
+            git config user.email "uptime-keepalive@users.noreply.github.com"
+            git add keepalive.txt
+            git commit -m "keep-alive $(date -u +%F)"
+            git push
+          fi
