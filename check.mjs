@@ -52,19 +52,33 @@ async function gh(path, init = {}) {
   return res.status === 204 ? null : res.json();
 }
 
+/** Push to the owner's phone; 3 tries with back-off; throws if all fail (the run then fails and Actions emails). */
 async function push(title, message, priority) {
-  if (!NTFY_TOPIC) return console.log("ntfy: NTFY_TOPIC not set - no push sent");
-  const res = await fetch(`https://ntfy.sh/${encodeURIComponent(NTFY_TOPIC)}`, {
-    method: "POST",
-    body: message,
-    headers: {
-      Title: title,
-      Priority: priority,
-      Tags: priority === "urgent" ? "rotating_light" : "white_check_mark",
-      Click: "https://app.horus-experimental.no",
-    },
-  });
-  console.log(`ntfy: push "${title}" -> HTTP ${res.status}`);
+  if (!NTFY_TOPIC) throw new Error("NTFY_TOPIC not set - no push possible");
+  let last = "";
+  for (let i = 1; i <= 3; i++) {
+    try {
+      const res = await fetch(`https://ntfy.sh/${encodeURIComponent(NTFY_TOPIC)}`, {
+        method: "POST",
+        body: message,
+        headers: {
+          Title: title,
+          Priority: priority,
+          Tags: priority === "urgent" ? "rotating_light" : "white_check_mark",
+          Click: "https://app.horus-experimental.no",
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      console.log(`ntfy: push "${title}" -> HTTP ${res.status} (attempt ${i})`);
+      if (res.ok) return;
+      last = `HTTP ${res.status}`;
+    } catch (e) {
+      last = e.cause?.code || e.name;
+      console.log(`ntfy: push "${title}" -> ${last} (attempt ${i})`);
+    }
+    await sleep(i * 5_000);
+  }
+  throw new Error(`ntfy push failed 3 times (${last})`);
 }
 
 const openDownIssues = () => gh(`/issues?state=open&labels=${LABEL}&per_page=10`);
@@ -73,7 +87,15 @@ async function main() {
   const startedAt = new Date();
   let r = await probeAll();
   console.log(`${startedAt.toISOString()} ${r.ok ? "UP" : "DOWN"}: ${r.lines.join(" | ")}`);
-  const open = await openDownIssues();
+  let open;
+  try {
+    open = await openDownIssues();
+  } catch (e) {
+    // GitHub's API is down: still alert on a real outage (no dedupe possible — a push per run is better than none).
+    console.log(`issue lookup failed: ${e.message}`);
+    if (r.ok) return;
+    open = null;
+  }
 
   if (r.ok) {
     for (const issue of open) {
@@ -86,7 +108,7 @@ async function main() {
     }
     return;
   }
-  if (open.length > 0) return console.log(`already alerted (#${open[0].number}); no re-alert`);
+  if (open && open.length > 0) return console.log(`already alerted (#${open[0].number}); no re-alert`);
 
   // Failing and not yet alerted: is it down for the whole window?
   const deadline = Date.now() + WINDOW_MS;
@@ -97,23 +119,30 @@ async function main() {
     if (r.ok) return console.log("recovered inside the window - no alert");
   }
   const mins = Math.round(WINDOW_MS / 60_000);
-  await gh("/issues", {
-    method: "POST",
-    body: JSON.stringify({
-      title: `For-Zazu: EXPERIMENTAL DOWN - unreachable from outside for ${mins} min (since ${startedAt.toISOString()})`,
-      labels: [LABEL],
-      body:
-        `Experimental Horus has been unreachable from the internet (GitHub's runners) for ${mins} minutes.\n\n` +
-        `Last probe:\n${r.lines.map((l) => `- ${l}`).join("\n")}\n\n` +
-        "Recover by hand: starfleet-development tools/horus-host/README.md, section \"Experimental 24/7\". " +
-        "This issue closes itself when the address is up again.",
-    }),
-  });
+  // The issue first (it is the dedupe record), but a failed issue never blocks the phone push.
+  let issueError = null;
+  try {
+    await gh("/issues", {
+      method: "POST",
+      body: JSON.stringify({
+        title: `For-Zazu: EXPERIMENTAL DOWN - unreachable from outside for ${mins} min (since ${startedAt.toISOString()})`,
+        labels: [LABEL],
+        body:
+          `Experimental Horus has been unreachable from the internet (GitHub's runners) for ${mins} minutes.\n\n` +
+          `Last probe:\n${r.lines.map((l) => `- ${l}`).join("\n")}\n\n` +
+          "Recover by hand: starfleet-development tools/horus-host/README.md, section \"Experimental 24/7\". " +
+          "This issue closes itself when the address is up again.",
+      }),
+    });
+  } catch (e) {
+    issueError = e;
+  }
   await push(
     "Experimental Horus is DOWN",
     `Unreachable from outside for ${mins} min (since ${startedAt.toISOString()}). Starfleet has been told.`,
     "urgent"
   );
+  if (issueError) throw issueError;
 }
 
 main().catch((e) => {
