@@ -25,6 +25,7 @@ jobs:
         with:
           node-version: 22
       - name: Watch from outside
+        id: watch
         env:
           MODE: watch
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,7 +35,9 @@ jobs:
           RUN_MS: ${{ inputs.run_ms }}
         run: node check.mjs
       - name: Start a successor after a crash or timeout
-        if: failure() || cancelled()
+        # A clean hand-off (a newer watcher is running) writes handed_off=true even when the run exits 1
+        # for a failed push - the exit code is the e-mail signal, not a reason for another successor.
+        if: (failure() || cancelled()) && steps.watch.outputs.handed_off != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run watch.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
