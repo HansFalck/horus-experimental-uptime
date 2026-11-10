@@ -1,5 +1,8 @@
 # Published to HansFalck/horus-experimental-uptime as .github/workflows/uptime.yml by publish.mjs
-# (source of truth: starfleet-development tools/horus-experimental/uptime/). #470.
+# (source of truth: starfleet-development tools/horus-experimental/uptime/). #470, #477.
+# This is the RESTARTER, not the watcher: every 5 minutes (GitHub's cron, or the keeper's
+# `gh workflow run uptime.yml`) it starts watch.yml if no watcher is queued or running.
+# The watching itself (probes every 60 s, alerts, certificates) is watch.yml.
 name: uptime
 on:
   schedule:
@@ -7,32 +10,30 @@ on:
   workflow_dispatch:
     inputs:
       targets:
-        description: "Comma-separated URLs to probe (a drill points this at a dead URL)"
+        description: "Unused since #477 (kept so the keeper's dispatch stays valid)"
         required: false
       window_ms:
-        description: "How long a failure must last before alerting (ms)"
+        description: "Unused since #477 (kept so the keeper's dispatch stays valid)"
         required: false
 permissions:
   contents: write
-  issues: write
+  actions: write
 concurrency:
   group: uptime
   cancel-in-progress: false
 jobs:
-  check:
+  restart:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Probe from outside
+      - name: Start a watcher if none is running
         env:
+          MODE: restart
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          TARGETS: ${{ inputs.targets }}
-          WINDOW_MS: ${{ inputs.window_ms }}
         run: node check.mjs
       # GitHub disables scheduled workflows in a public repo after 60 days without a commit.
       # A tiny commit whenever the newest commit is 30+ days old keeps the schedule alive.
