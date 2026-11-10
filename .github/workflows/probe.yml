@@ -1,0 +1,22 @@
+# Published to HansFalck/horus-experimental-uptime as .github/workflows/probe.yml by publish.mjs
+# (source of truth: starfleet-development tools/horus-experimental/uptime/). #475.
+# One probe from outside, on demand: the on-call's `probe --outside` dispatches this and reads the
+# UP:/DOWN: line in the log. Never scheduled, never alerts, holds no secrets.
+name: probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe once from outside
+        env:
+          MODE: probe
+        run: node check.mjs
