@@ -109,7 +109,7 @@ async function push(title, message, priority) {
     } catch (e) {
       log(`ntfy: push "${title}" -> ${e.cause?.code || e.name} (attempt ${i})`);
     }
-    await sleep(i * 5_000);
+    if (i < 3) await sleep(i * 5_000);
   }
   pushFailed = true;
   return false;
@@ -189,6 +189,9 @@ async function applyDownActions(state, actions, now, lines) {
         await ghJson("POST", `/issues/${s.issueNumber}/comments`, { body: `RECOVERED - seen up from outside at ${new Date(now).toISOString()}.\n\n${lines.join("\n")}` });
         await ghJson("PATCH", `/issues/${s.issueNumber}`, { state: "closed" });
         log(`issue #${s.issueNumber} closed`);
+        for (const other of await listIssues(DOWN_LABEL)) {
+          if (other.number !== s.issueNumber && other.title.includes("EXPERIMENTAL DOWN")) await ghJson("PATCH", `/issues/${other.number}`, { state: "closed" });
+        }
         s = { ...s, issueNumber: null };
       } catch (e) {
         log(`issue close failed (will retry): ${e.message}`);
