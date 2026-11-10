@@ -11,6 +11,8 @@
 //                            if none is queued or running.
 // MODE=drill    (drill.yml)  the watch loop against a test URL and a test ntfy topic, label uptime-drill,
 //                            no hand-off, never touches experimental-down issues.
+// MODE=probe    (probe.yml)  probe every TARGET once, log UP:/DOWN: lines, exit 0. For the on-call's
+//                            `probe --outside`. No GitHub, no ntfy, no certificates, no secrets read.
 // No dependencies; Node 22. Secrets: NTFY_TOPIC, FUNNEL_HOST (repo secrets), GITHUB_TOKEN (Actions).
 import { appendFileSync } from "node:fs";
 import tls from "node:tls";
@@ -370,7 +372,13 @@ async function restart() {
   log("no watcher was running - dispatched one");
 }
 
-(MODE === "restart" ? restart() : watch())
+/** One probe, one line in the watcher's format (oncall's lastCheckLineIsUp reads it). Always succeeds. */
+async function probeOnce() {
+  const r = await probeAll();
+  log(`${r.ok ? "UP" : "DOWN"}: ${r.lines.join(" | ")}`);
+}
+
+(MODE === "probe" ? probeOnce() : MODE === "restart" ? restart() : watch())
   .then(() => {
     if (pushFailed) {
       console.error("a push failed during this run");
