@@ -1,0 +1,51 @@
+# Published to HansFalck/horus-experimental-uptime as .github/workflows/drill.yml by publish.mjs
+# (source of truth: starfleet-development tools/horus-experimental/uptime/). #477.
+# A rehearsal of the watcher against a dead test URL and a TEST ntfy topic. It uses the label
+# uptime-drill, has no hand-off and no successor, never reads the NTFY_TOPIC secret and never
+# touches experimental-down issues. `scale` divides ONLY the confirm window, the repeat
+# intervals and the 3-hour boundary (scale 30: confirm 6 s, repeat 1 min, boundary 6 min, then 2 min).
+name: drill
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Comma-separated URLs to probe (a dead test URL)"
+        required: true
+      ntfy_topic:
+        description: "TEST ntfy topic (never the production one)"
+        required: true
+      run_ms:
+        description: "How long the drill runs (ms)"
+        required: false
+        default: "900000"
+      scale:
+        description: "Time compression for confirm/repeat/boundary"
+        required: false
+        default: "1"
+      cert_alert_days:
+        description: "Certificate alert threshold in days (set 365 to rehearse a certificate alert)"
+        required: false
+permissions:
+  contents: read
+  issues: write
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Drill
+        env:
+          MODE: drill
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FUNNEL_HOST: ${{ secrets.FUNNEL_HOST }}
+          TARGETS: ${{ inputs.targets }}
+          NTFY_TOPIC: ${{ inputs.ntfy_topic }}
+          RUN_MS: ${{ inputs.run_ms }}
+          SCALE: ${{ inputs.scale }}
+          CERT_ALERT_DAYS: ${{ inputs.cert_alert_days }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: node check.mjs
