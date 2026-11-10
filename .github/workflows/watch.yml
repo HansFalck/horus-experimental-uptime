@@ -1,0 +1,40 @@
+# Published to HansFalck/horus-experimental-uptime as .github/workflows/watch.yml by publish.mjs
+# (source of truth: starfleet-development tools/horus-experimental/uptime/). #477.
+# The long-running watcher: probes every 60 s for ~5.5 h, alerts and repeats, watches the
+# certificates, then dispatches its successor (newest run wins). If it crashes or times out, the
+# last step dispatches a successor; if even that fails, uptime.yml's cron restarts the chain.
+# NO concurrency group on purpose: the old and the new watcher overlap while handing over.
+name: watch
+on:
+  workflow_dispatch:
+    inputs:
+      run_ms:
+        description: "How long this run probes before handing over (ms; default 19800000 = 5 h 30 min)"
+        required: false
+permissions:
+  contents: read
+  issues: write
+  actions: write
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Watch from outside
+        env:
+          MODE: watch
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          FUNNEL_HOST: ${{ secrets.FUNNEL_HOST }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          RUN_MS: ${{ inputs.run_ms }}
+        run: node check.mjs
+      - name: Start a successor after a crash or timeout
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run watch.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
