@@ -12,8 +12,10 @@
 // MODE=drill    (drill.yml)  the watch loop against a test URL and a test ntfy topic, label uptime-drill,
 //                            no hand-off, never touches experimental-down issues.
 // No dependencies; Node 22. Secrets: NTFY_TOPIC, FUNNEL_HOST (repo secrets), GITHUB_TOKEN (Actions).
+import { appendFileSync } from "node:fs";
 import tls from "node:tls";
 import {
+  adoptIssue,
   backPushText,
   certActions,
   certDaysLeft,
@@ -25,7 +27,9 @@ import {
   formatMarker,
   handoffDecision,
   idleState,
+  isUnfinishedRun,
   muteDecision,
+  pushDue,
   recordPush,
   restarterDecision,
   resumedState,
@@ -117,9 +121,11 @@ async function listIssues(label) {
 // The drill uses ONE label for both kinds, so the kinds are told apart by title.
 const isCertIssue = (i) => /\[(app|funnel)\]/.test(i.title);
 const listDownIssues = async () => (await listIssues(DOWN_LABEL)).filter((i) => !isCertIssue(i));
-async function listRuns(status) {
-  const r = await gh(`/actions/workflows/watch.yml/runs?status=${status}&per_page=30`);
-  return (r.workflow_runs || []).map((x) => ({ id: x.id, status: x.status }));
+// status= takes ONE value and a just-created run can be queued, requested, waiting, pending or
+// in_progress, so list unfiltered (newest first) and keep every run that is not finished.
+async function listRuns() {
+  const r = await gh("/actions/workflows/watch.yml/runs?per_page=30");
+  return (r.workflow_runs || []).map((x) => ({ id: x.id, status: x.status })).filter(isUnfinishedRun);
 }
 async function dispatchWatcher() {
   await ghJson("POST", "/actions/workflows/watch.yml/dispatches", { ref: REF });
@@ -141,7 +147,7 @@ async function applyDownActions(state, actions, now, lines) {
       try {
         const existing = (await listDownIssues())[0];
         if (existing) {
-          s = { ...s, issueNumber: existing.number };
+          s = adoptIssue(s, existing); // the issue holds the true since / lastPush
         } else {
           const body =
             `Experimental Horus has been unreachable from the internet (GitHub's runners) since ${new Date(s.since).toISOString()}.\n\n` +
@@ -161,6 +167,7 @@ async function applyDownActions(state, actions, now, lines) {
         if (await push("Experimental Horus is back up", backPushText({ now, since: a.since }), "default")) s = { ...s, backPushed: true };
         continue;
       }
+      if (!pushDue({ now, since: s.since, lastPush: s.lastPush, scale: SCALE })) continue; // an adopted issue may already have had its push
       const m = muteDecision({ now, untilText: await maintenanceText() });
       if (m.mute) {
         log(`push suppressed: ${m.reason}`);
@@ -169,7 +176,12 @@ async function applyDownActions(state, actions, now, lines) {
       if (await push("Experimental Horus is DOWN", downPushText({ now, since: s.since }), "urgent")) {
         s = recordPush(s, now);
         if (s.issueNumber != null) {
-          ghJson("PATCH", `/issues/${s.issueNumber}`, { title: TITLE_PREFIX + downTitle({ now, since: s.since }), body: await rebuildBody(s) }).catch((e) => log(`marker update failed: ${e.message}`));
+          try {
+            const body = await rebuildBody(s);
+            await ghJson("PATCH", `/issues/${s.issueNumber}`, { title: TITLE_PREFIX + downTitle({ now, since: s.since }), body });
+          } catch (e) {
+            log(`marker update failed: ${e.message}`);
+          }
         }
       }
     } else if (a.type === "close") {
@@ -294,6 +306,7 @@ async function watch() {
   let lastDispatchAt = null;
   for (let tick = 0; ; tick++) {
     const t0 = Date.now();
+    try {
     const r = await probeAll();
     log(`${r.ok ? "UP" : "DOWN"}: ${r.lines.join(" | ")}`);
     const res = step(state, r.ok, t0, { scale: SCALE });
@@ -308,9 +321,12 @@ async function watch() {
       if (t0 >= deadline) break;
     } else if (t0 >= deadline || tick % 5 === 0) {
       try {
-        const runs = [...(await listRuns("in_progress")), ...(t0 >= deadline ? await listRuns("queued") : [])];
+        const runs = await listRuns();
         const verdict = handoffDecision({ now: t0, deadline, myId: RUN_ID, runs, lastDispatchAt });
-        if (verdict === "exit") return log("a newer watcher is running - this run ends");
+        if (verdict === "exit") {
+          markHandedOff();
+          return log("a newer watcher is running - this run ends");
+        }
         if (verdict === "dispatch") {
           await dispatchWatcher();
           lastDispatchAt = t0;
@@ -319,6 +335,9 @@ async function watch() {
       } catch (e) {
         log(`hand-off check failed: ${e.message}`);
       }
+    }
+    } catch (e) {
+      log(`tick failed (carrying on): ${e.message}`);
     }
     await sleep(Math.max(0, TICK_MS - (Date.now() - t0)));
   }
@@ -330,8 +349,19 @@ async function watch() {
   }
 }
 
+/** A clean hand-off (a newer watcher is running): tell watch.yml, so its crash step does not add a successor. */
+function markHandedOff() {
+  if (env.GITHUB_OUTPUT) {
+    try {
+      appendFileSync(env.GITHUB_OUTPUT, "handed_off=true\n");
+    } catch (e) {
+      log(`could not write the hand-off flag: ${e.message}`);
+    }
+  }
+}
+
 async function restart() {
-  const runs = [...(await listRuns("in_progress")), ...(await listRuns("queued"))];
+  const runs = await listRuns();
   if (restarterDecision(runs) === "skip") return log("a watcher is queued or running - nothing to do");
   await dispatchWatcher();
   log("no watcher was running - dispatched one");
