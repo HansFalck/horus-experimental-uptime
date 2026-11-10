@@ -7,6 +7,7 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 
 export const CONFIRM_MS = 3 * MIN;
+export const CONFIRM_TOLERANCE_MS = 5_000;
 export const MIN_FAILS = 3;
 export const BOUNDARY_MS = 3 * HOUR;
 export const REPEAT_EARLY_MS = 30 * MIN;
@@ -16,9 +17,12 @@ export const MUTE_MAX_MS = 3 * HOUR;
 export const HANDOFF_SPACING_MS = 5 * MIN;
 export const CERT_DEFAULT_DAYS = 14;
 
-/** Down is confirmed after >= 3 failed probes AND >= 180 s (scaled) since the first failing one. */
+/**
+ * Down is confirmed after >= 3 failed probes AND >= 175 s (180 s minus a 5 s timer-jitter tolerance,
+ * both scaled) since the first failing one: three 60 s ticks that sum to 179,99x ms must not slip a tick.
+ */
 export function isDownConfirmed({ failCount, firstFailAt, now, scale = 1 }) {
-  return failCount >= MIN_FAILS && firstFailAt != null && now - firstFailAt >= CONFIRM_MS / scale;
+  return failCount >= MIN_FAILS && firstFailAt != null && now - firstFailAt >= (CONFIRM_MS - CONFIRM_TOLERANCE_MS) / scale;
 }
 
 /** Push due: never pushed, or the gap since the last push reached 30 min (first 3 h) / 60 min (after). */
@@ -94,6 +98,23 @@ export function resumedState(issue, now) {
   return { ...idleState(), alerted: true, since, failCount: MIN_FAILS, firstFailAt: since, lastPush: st.lastPush, pushes: st.pushes, issueNumber: issue.number };
 }
 
+/**
+ * Adopting an already-open issue found by number: the issue holds the true since / lastPush / pushes,
+ * so they win over this process's fresh ones (earliest since; latest lastPush; most pushes). Without
+ * this the adopter pushes again at once and overwrites the true since.
+ */
+export function adoptIssue(state, issue) {
+  const st = stateFromIssue(issue);
+  const pick = (a, b, f) => (a == null ? b : b == null ? a : f(a, b));
+  return {
+    ...state,
+    issueNumber: issue.number,
+    since: pick(st.since, state.since, Math.min),
+    lastPush: pick(st.lastPush, state.lastPush, Math.max),
+    pushes: Math.max(st.pushes, state.pushes ?? 0),
+  };
+}
+
 /** After a push really went out. */
 export const recordPush = (s, now) => ({ ...s, lastPush: now, pushes: s.pushes + 1 });
 
@@ -146,8 +167,14 @@ export function handoffDecision({ now, deadline, myId, runs, lastDispatchAt = nu
   return "dispatch";
 }
 
-/** Restarter: dispatch a watcher only when none is queued or in progress. */
-export const restarterDecision = (runs) => (runs.some((r) => r.status === "queued" || r.status === "in_progress") ? "skip" : "dispatch");
+/**
+ * A run that is not finished. A just-created run may be queued, requested, waiting, pending or
+ * in_progress, and the API's status= filter takes ONE value - so callers list unfiltered and ask this.
+ */
+export const isUnfinishedRun = (r) => r.status !== "completed";
+
+/** Restarter: dispatch a watcher only when no run of watch.yml is unfinished (any state). */
+export const restarterDecision = (runs) => (runs.some(isUnfinishedRun) ? "skip" : "dispatch");
 
 // ---- Certificates ----------------------------------------------------------------------------------
 /** Whole-and-fractional days from now to valid_to; null when unreadable. */
